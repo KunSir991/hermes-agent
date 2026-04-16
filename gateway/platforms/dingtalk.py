@@ -28,6 +28,7 @@ from typing import Any, Dict, Optional
 try:
     import dingtalk_stream
     from dingtalk_stream import ChatbotHandler, ChatbotMessage
+    from dingtalk_stream.frames import CallbackMessage
     DINGTALK_STREAM_AVAILABLE = True
 except ImportError:
     DINGTALK_STREAM_AVAILABLE = False
@@ -54,16 +55,16 @@ logger = logging.getLogger(__name__)
 MAX_MESSAGE_LENGTH = 20000
 RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
 _SESSION_WEBHOOKS_MAX = 500
-_DINGTALK_WEBHOOK_RE = re.compile(r'^https://api\.dingtalk\.com/')
+_DINGTALK_WEBHOOK_RE = re.compile(r'^https://(oapi|api)\.dingtalk\.com/')
 
 
 def check_dingtalk_requirements() -> bool:
-    """Check if DingTalk dependencies are available and configured."""
-    if not DINGTALK_STREAM_AVAILABLE or not HTTPX_AVAILABLE:
-        return False
-    if not os.getenv("DINGTALK_CLIENT_ID") or not os.getenv("DINGTALK_CLIENT_SECRET"):
-        return False
-    return True
+    """Check if DingTalk dependencies are available.
+
+    Note: Credential checks are deferred to DingTalkAdapter.connect(),
+    which supports both environment variables and config.yaml (extra).
+    """
+    return DINGTALK_STREAM_AVAILABLE and HTTPX_AVAILABLE
 
 
 class DingTalkAdapter(BasePlatformAdapter):
@@ -133,7 +134,7 @@ class DingTalkAdapter(BasePlatformAdapter):
         while self._running:
             try:
                 logger.debug("[%s] Starting stream client...", self.name)
-                await asyncio.to_thread(self._stream_client.start)
+                await self._stream_client.start()
             except asyncio.CancelledError:
                 return
             except Exception as e:
@@ -314,20 +315,30 @@ class _IncomingHandler(ChatbotHandler if DINGTALK_STREAM_AVAILABLE else object):
         self._adapter = adapter
         self._loop = loop
 
-    def process(self, message: "ChatbotMessage"):
-        """Called by dingtalk-stream in its thread when a message arrives.
+    async def process(self, message: "CallbackMessage"):
+        """Called by dingtalk-stream in its async loop when a message arrives.
 
-        Schedules the async handler on the main event loop.
+        The SDK passes a CallbackMessage whose .data dict contains the actual
+        ChatbotMessage fields. We must convert it before forwarding to the adapter.
         """
         loop = self._loop
         if loop is None or loop.is_closed():
             logger.error("[DingTalk] Event loop unavailable, cannot dispatch message")
-            return dingtalk_stream.AckMessage.STATUS_OK, "OK"
+            return (dingtalk_stream.AckMessage.STATUS_OK, "OK")
 
-        future = asyncio.run_coroutine_threadsafe(self._adapter._on_message(message), loop)
+        # Convert CallbackMessage.data (dict) to ChatbotMessage
+        raw_data = getattr(message, "data", None) or {}
+        chatbot_message = ChatbotMessage.from_dict(raw_data)
+
+        future = asyncio.run_coroutine_threadsafe(self._adapter._on_message(chatbot_message), loop)
         try:
-            future.result(timeout=60)
+            # Use a longer timeout (300s = 5min) to allow for LLM processing time.
+            # wrap_future() timeout param requires Python 3.12+, so use wait_for() instead.
+            await asyncio.wait_for(asyncio.wrap_future(future), timeout=300)
+        except asyncio.TimeoutError:
+            logger.warning("[DingTalk] Message processing timed out after 300s "
+                           "(agent may still be working, but session webhook may have expired)")
         except Exception:
             logger.exception("[DingTalk] Error processing incoming message")
 
-        return dingtalk_stream.AckMessage.STATUS_OK, "OK"
+        return (dingtalk_stream.AckMessage.STATUS_OK, "OK")
