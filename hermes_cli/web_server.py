@@ -1983,11 +1983,22 @@ def _resolve_chat_config(config: Dict[str, Any]) -> Dict[str, str]:
                 base_url = runtime.get("base_url", "")
             if not api_key:
                 api_key = runtime.get("api_key", "")
-        except Exception:
-            pass
+        except Exception as exc:
+            _log.debug("resolve_runtime_provider failed for provider=%s: %s", provider, exc)
 
     if not model_name:
         model_name = os.getenv("HERMES_MODEL", "anthropic/claude-sonnet-4")
+    if not base_url:
+        # Try provider-specific base URL before falling back to OpenRouter
+        try:
+            from hermes_cli.auth import PROVIDER_REGISTRY
+            _alias_map = {"dashscope": "alibaba", "aliyun": "alibaba", "alibaba-cloud": "alibaba", "qwen": "alibaba"}
+            _resolved_id = _alias_map.get(provider.lower(), provider.lower())
+            _pconfig = PROVIDER_REGISTRY.get(_resolved_id)
+            if _pconfig and _pconfig.inference_base_url:
+                base_url = _pconfig.inference_base_url
+        except Exception:
+            pass
     if not base_url:
         from hermes_constants import OPENROUTER_BASE_URL
         base_url = OPENROUTER_BASE_URL

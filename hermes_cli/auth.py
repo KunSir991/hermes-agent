@@ -985,6 +985,7 @@ def resolve_provider(
         "kimi-cn": "kimi-coding-cn", "moonshot-cn": "kimi-coding-cn",
         "arcee-ai": "arcee", "arceeai": "arcee",
         "minimax-china": "minimax-cn", "minimax_cn": "minimax-cn",
+        "dashscope": "alibaba", "aliyun": "alibaba", "alibaba-cloud": "alibaba",
         "claude": "anthropic", "claude-code": "anthropic",
         "github": "copilot", "github-copilot": "copilot",
         "github-models": "copilot", "github-model": "copilot",
