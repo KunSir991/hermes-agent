@@ -56,6 +56,7 @@ export interface Translations {
     };
     nav: {
       status: string;
+      chat: string;
       sessions: string;
       analytics: string;
       logs: string;
@@ -286,5 +287,22 @@ export interface Translations {
   // ── Language switcher ──
   language: {
     switchTo: string;
+  };
+
+  // ── Chat page ──
+  chat: {
+    title: string;
+    placeholder: string;
+    send: string;
+    cancel: string;
+    clear: string;
+    empty: string;
+    emptyHint: string;
+    thinking: string;
+    you: string;
+    assistant: string;
+    messages: string;
+    enterToSend: string;
+    error: string;
   };
 }

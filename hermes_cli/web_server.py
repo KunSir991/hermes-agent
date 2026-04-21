@@ -21,7 +21,7 @@ import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict, List, Optional
 
 import yaml
 
@@ -49,7 +49,7 @@ from gateway.status import get_running_pid, read_runtime_status
 try:
     from fastapi import FastAPI, HTTPException, Request
     from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+    from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel
 except ImportError:
@@ -1967,6 +1967,366 @@ async def update_config_raw(body: RawConfigUpdate):
         return {"ok": True}
     except yaml.YAMLError as e:
         raise HTTPException(status_code=400, detail=f"Invalid YAML: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Chat endpoint — send a message to the agent and stream the response via SSE
+# ---------------------------------------------------------------------------
+
+
+def _resolve_chat_config(config: Dict[str, Any]) -> Dict[str, str]:
+    """Resolve model, base_url, api_key, and provider from config + env vars.
+    
+    Returns dict with keys: model_name, base_url, api_key, provider, is_anthropic
+    """
+    model_cfg = config.get("model", {})
+    if isinstance(model_cfg, str):
+        model_name = model_cfg
+        base_url = ""
+        api_key = ""
+        provider = ""
+    else:
+        model_name = model_cfg.get("default", "")
+        base_url = model_cfg.get("base_url", "")
+        api_key = model_cfg.get("api_key", "")
+        provider = model_cfg.get("provider", "auto")
+
+    # Resolve provider -> base_url + api_key
+    if not base_url or not api_key:
+        try:
+            from hermes_cli.runtime_provider import resolve_runtime_provider
+            runtime = resolve_runtime_provider(
+                requested=provider if provider != "auto" else None,
+            )
+            if not base_url:
+                base_url = runtime.get("base_url", "")
+            if not api_key:
+                api_key = runtime.get("api_key", "")
+        except Exception:
+            pass
+
+    if not model_name:
+        model_name = os.getenv("HERMES_MODEL", "anthropic/claude-sonnet-4")
+    if not base_url:
+        from hermes_constants import OPENROUTER_BASE_URL
+        base_url = OPENROUTER_BASE_URL
+    if not api_key:
+        # Try provider-specific env vars first, then general fallback
+        provider_lower = provider.lower()
+        if provider_lower in ("alibaba", "dashscope", "qwen"):
+            api_key = os.getenv("DASHSCOPE_API_KEY", "")
+        if not api_key:
+            api_key = os.getenv("OPENROUTER_API_KEY", "") or os.getenv("OPENAI_API_KEY", "")
+
+    # Normalize base_url: strip trailing /v1 since we append it ourselves
+    base_url = base_url.rstrip("/")
+    if base_url.endswith("/v1"):
+        base_url = base_url[:-3]
+
+    is_anthropic = ("anthropic" in provider.lower() or
+                    "api.anthropic.com" in base_url)
+
+    return {
+        "model_name": model_name,
+        "base_url": base_url,
+        "api_key": api_key,
+        "provider": provider,
+        "is_anthropic": is_anthropic,
+    }
+
+
+class ChatMessage(BaseModel):
+    message: str
+
+
+# In-memory chat sessions: session_id -> list of {role, content}
+_chat_sessions: Dict[str, List[Dict[str, str]]] = {}
+_chat_sessions_lock = threading.Lock()
+
+
+def _get_or_create_chat_session(session_id: str) -> List[Dict[str, str]]:
+    """Get or create a chat session history."""
+    with _chat_sessions_lock:
+        if session_id not in _chat_sessions:
+            _chat_sessions[session_id] = []
+        return _chat_sessions[session_id]
+
+
+def _clear_chat_session(session_id: str) -> None:
+    """Clear a chat session's history."""
+    with _chat_sessions_lock:
+        _chat_sessions.pop(session_id, None)
+
+
+@app.post("/api/chat")
+async def chat_message(body: ChatMessage, request: Request):
+    """Send a message to the agent and get a streaming SSE response.
+
+    Uses the configured model via OpenAI-compatible API.
+    Maintains conversation history per session (session ID from query param).
+    """
+    _require_token(request)
+
+    session_id = request.query_params.get("session_id", "default")
+    history = _get_or_create_chat_session(session_id)
+
+    # Append user message
+    history.append({"role": "user", "content": body.message})
+
+    # Build system prompt from config
+    config = load_config()
+    system_prompt = _build_chat_system_prompt(config)
+
+    # Build messages list
+    messages = [{"role": "system", "content": system_prompt}] + history
+
+    # Resolve model / credentials
+    chat_config = _resolve_chat_config(config)
+    model_name = chat_config["model_name"]
+    base_url = chat_config["base_url"]
+    api_key = chat_config["api_key"]
+    provider = chat_config["provider"]
+    is_anthropic = chat_config["is_anthropic"]
+
+    async def event_generator() -> AsyncGenerator[str, None]:
+        """Stream SSE events from the model API."""
+        import httpx
+
+        full_response = ""
+        tool_calls_accumulated = []
+        current_tool_call = None
+
+        try:
+            headers = {
+                "Content-Type": "application/json",
+            }
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+
+            # Anthropic needs a special header
+            if "anthropic" in provider.lower() or "anthropic" in base_url:
+                headers["anthropic-version"] = "2023-06-01"
+                headers["anthropic-beta"] = "message-batches-2024-09-24"
+
+            payload = {
+                "model": model_name.split("/")[-1] if "/" in model_name else model_name,
+                "messages": messages,
+                "stream": True,
+                "max_tokens": 4096,
+            }
+
+            if is_anthropic:
+                payload["model"] = model_name.split("/")[-1] if "/" in model_name else model_name
+                payload["system"] = system_prompt
+                payload["messages"] = [m for m in messages if m["role"] != "system"]
+
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                async with client.stream(
+                    "POST",
+                    f"{base_url.rstrip('/')}/v1/chat/completions" if not is_anthropic
+                    else f"{base_url.rstrip('/')}/v1/messages",
+                    headers=headers,
+                    json=payload,
+                ) as response:
+                    if response.status_code != 200:
+                        error_body = await response.aread()
+                        error_text = error_body.decode("utf-8", errors="replace")
+                        yield f"event: error\ndata: {json.dumps({'status': response.status_code, 'message': error_text})}\n\n"
+                        return
+
+                    async for line in response.aiter_lines():
+                        if not line or line.startswith(":"):
+                            continue
+
+                        if line.startswith("data: "):
+                            data_str = line[6:]
+                            if data_str.strip() == "[DONE]":
+                                break
+                            try:
+                                data = json.loads(data_str)
+                            except json.JSONDecodeError:
+                                continue
+
+                            if is_anthropic:
+                                # Anthropic SSE format
+                                event_type = data.get("type", "")
+                                if event_type == "content_block_delta":
+                                    delta = data.get("delta", {})
+                                    if delta.get("type") == "text_delta":
+                                        text = delta.get("text", "")
+                                        if text:
+                                            full_response += text
+                                            yield f"event: message\ndata: {json.dumps({'delta': text})}\n\n"
+                                elif event_type == "content_block_start":
+                                    block = data.get("content_block", {})
+                                    if block.get("type") == "tool_use":
+                                        current_tool_call = {
+                                            "id": block.get("id", ""),
+                                            "name": block.get("name", ""),
+                                            "input": "",
+                                        }
+                                elif event_type == "content_block_delta" and current_tool_call:
+                                    delta = data.get("delta", {})
+                                    if delta.get("type") == "input_json_delta":
+                                        current_tool_call["input"] += delta.get("partial_json", "")
+                                elif event_type == "message_delta":
+                                    usage = data.get("usage", {})
+                                    if usage:
+                                        yield f"event: usage\ndata: {json.dumps(usage)}\n\n"
+                                elif event_type == "message_stop":
+                                    if current_tool_call:
+                                        tool_calls_accumulated.append(current_tool_call)
+                                        current_tool_call = None
+                            else:
+                                # OpenAI-compatible SSE format
+                                choices = data.get("choices", [])
+                                if choices:
+                                    choice = choices[0]
+                                    delta = choice.get("delta", {})
+
+                                    # Text content
+                                    content = delta.get("content")
+                                    if content:
+                                        full_response += content
+                                        yield f"event: message\ndata: {json.dumps({'delta': content})}\n\n"
+
+                                    # Tool calls
+                                    tool_call_delta = delta.get("tool_calls")
+                                    if tool_call_delta:
+                                        for tc in tool_call_delta:
+                                            index = tc.get("index", 0)
+                                            if len(tool_calls_accumulated) <= index:
+                                                tool_calls_accumulated.append({
+                                                    "id": tc.get("id", ""),
+                                                    "name": tc.get("function", {}).get("name", ""),
+                                                    "arguments": "",
+                                                })
+                                            fn = tc.get("function", {})
+                                            if fn.get("arguments"):
+                                                tool_calls_accumulated[index]["arguments"] += fn["arguments"]
+
+                    # Send completion event
+                    yield f"event: done\ndata: {json.dumps({'content': full_response})}\n\n"
+
+            # Save assistant response to history
+            history.append({"role": "assistant", "content": full_response})
+
+        except Exception as e:
+            _log.exception("Chat streaming failed")
+            yield f"event: error\ndata: {json.dumps({'message': str(e)})}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+@app.post("/api/chat/send")
+async def chat_message_non_stream(body: ChatMessage, request: Request):
+    """Send a message to the agent and get a non-streaming JSON response.
+    
+    Simpler endpoint for clients that don't support SSE.
+    """
+    _require_token(request)
+
+    session_id = request.query_params.get("session_id", "default")
+    history = _get_or_create_chat_session(session_id)
+
+    # Append user message
+    history.append({"role": "user", "content": body.message})
+
+    # Build system prompt
+    config = load_config()
+    system_prompt = _build_chat_system_prompt(config)
+
+    messages = [{"role": "system", "content": system_prompt}] + history
+
+    # Resolve model / credentials
+    chat_config = _resolve_chat_config(config)
+    model_name = chat_config["model_name"]
+    base_url = chat_config["base_url"]
+    api_key = chat_config["api_key"]
+    provider = chat_config["provider"]
+    is_anthropic = chat_config["is_anthropic"]
+
+    import httpx
+
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    payload = {
+        "model": model_name.split("/")[-1] if "/" in model_name else model_name,
+        "messages": messages,
+        "max_tokens": 4096,
+    }
+
+    if is_anthropic:
+        payload["system"] = system_prompt
+        payload["messages"] = [m for m in messages if m["role"] != "system"]
+
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.post(
+                f"{base_url.rstrip('/')}/v1/chat/completions" if not is_anthropic
+                else f"{base_url.rstrip('/')}/v1/messages",
+                headers=headers,
+                json=payload,
+            )
+            if resp.status_code != 200:
+                raise HTTPException(status_code=resp.status_code, detail=resp.text)
+
+            data = resp.json()
+            if is_anthropic:
+                content = "".join(
+                    b.get("text", "")
+                    for b in data.get("content", [])
+                    if b.get("type") == "text"
+                )
+            else:
+                content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+
+            history.append({"role": "assistant", "content": content})
+            return {"content": content, "session_id": session_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        _log.exception("Chat request failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/chat/session")
+async def delete_chat_session(request: Request):
+    """Clear the current chat session history."""
+    _require_token(request)
+    session_id = request.query_params.get("session_id", "default")
+    _clear_chat_session(session_id)
+    return {"ok": True, "session_id": session_id}
+
+
+def _build_chat_system_prompt(config: Dict[str, Any]) -> str:
+    """Build a system prompt for the chat based on config."""
+    parts = []
+
+    # Agent identity
+    agent_cfg = config.get("agent", {})
+    if isinstance(agent_cfg, dict):
+        system_text = agent_cfg.get("system_prompt", "")
+        if system_text:
+            parts.append(system_text)
+
+        # Personality
+        personalities = agent_cfg.get("personalities", {})
+        if isinstance(personalities, dict):
+            # Default to helpful personality
+            default_persona = personalities.get("helpful", "")
+            if default_persona:
+                parts.append(default_persona)
+
+    if not parts:
+        parts.append(
+            "You are Hermes Agent, a helpful AI assistant created by Nous Research. "
+            "You are knowledgeable, direct, and focused on being genuinely useful."
+        )
+
+    return "\n\n".join(parts)
 
 
 # ---------------------------------------------------------------------------

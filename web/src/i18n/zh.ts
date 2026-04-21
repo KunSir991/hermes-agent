@@ -54,6 +54,7 @@ export const zh: Translations = {
     },
     nav: {
       status: "状态",
+      chat: "对话",
       sessions: "会话",
       analytics: "分析",
       logs: "日志",
@@ -274,5 +275,21 @@ export const zh: Translations = {
 
   language: {
     switchTo: "切换到英文",
+  },
+
+  chat: {
+    title: "对话",
+    placeholder: "输入消息...",
+    send: "发送",
+    cancel: "取消",
+    clear: "清空",
+    empty: "暂无消息",
+    emptyHint: "发送消息开始对话",
+    thinking: "思考中...",
+    you: "你",
+    assistant: "助手",
+    messages: "条消息",
+    enterToSend: "按 Enter 发送，Shift+Enter 换行",
+    error: "错误",
   },
 };

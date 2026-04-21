@@ -1,5 +1,5 @@
 import { Routes, Route, NavLink, Navigate } from "react-router-dom";
-import { Activity, BarChart3, Clock, FileText, KeyRound, MessageSquare, Package, Settings } from "lucide-react";
+import { Activity, BarChart3, Clock, FileText, KeyRound, MessageSquare, Package, Settings, Send } from "lucide-react";
 import StatusPage from "@/pages/StatusPage";
 import ConfigPage from "@/pages/ConfigPage";
 import EnvPage from "@/pages/EnvPage";
@@ -8,11 +8,13 @@ import LogsPage from "@/pages/LogsPage";
 import AnalyticsPage from "@/pages/AnalyticsPage";
 import CronPage from "@/pages/CronPage";
 import SkillsPage from "@/pages/SkillsPage";
+import ChatPage from "@/pages/ChatPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { useI18n } from "@/i18n";
 
 const NAV_ITEMS = [
   { path: "/", labelKey: "status" as const, icon: Activity },
+  { path: "/chat", labelKey: "chat" as const, icon: Send },
   { path: "/sessions", labelKey: "sessions" as const, icon: MessageSquare },
   { path: "/analytics", labelKey: "analytics" as const, icon: BarChart3 },
   { path: "/logs", labelKey: "logs" as const, icon: FileText },
@@ -78,6 +80,7 @@ export default function App() {
       <main className="relative z-2 mx-auto w-full max-w-[1400px] flex-1 px-3 sm:px-6 pt-16 sm:pt-20 pb-4 sm:pb-8">
         <Routes>
           <Route path="/" element={<StatusPage />} />
+          <Route path="/chat" element={<ChatPage />} />
           <Route path="/sessions" element={<SessionsPage />} />
           <Route path="/analytics" element={<AnalyticsPage />} />
           <Route path="/logs" element={<LogsPage />} />

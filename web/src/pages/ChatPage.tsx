@@ -1,0 +1,356 @@
+import { useEffect, useState, useRef, useCallback } from "react";
+import { Send, Trash2, Loader2, MessageSquare, Cpu } from "lucide-react";
+import { Markdown } from "@/components/Markdown";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { api } from "@/lib/api";
+import { useI18n } from "@/i18n";
+
+interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export default function ChatPage() {
+  const { t } = useI18n();
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [input, setInput] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [modelInfo, setModelInfo] = useState<string>("");
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
+
+  // Fetch current model info on mount
+  useEffect(() => {
+    api
+      .getModelInfo()
+      .then((resp) => {
+        const model = resp.model || resp.capabilities?.model_family || "";
+        const provider = resp.provider || "";
+        if (model) {
+          setModelInfo(provider ? `${provider}/${model}` : model);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  const scrollToBottom = useCallback(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, []);
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages, scrollToBottom]);
+
+  // Auto-focus input on mount
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+
+  const sendMessage = async () => {
+    const text = input.trim();
+    if (!text || isLoading) return;
+
+    // Clear error state
+    setError(null);
+
+    // Add user message immediately
+    const userMsg: ChatMessage = { role: "user", content: text };
+    setMessages((prev) => [...prev, userMsg]);
+    setInput("");
+    setIsLoading(true);
+
+    // Create a placeholder assistant message that we'll stream into
+    const assistantIndex = messages.length + 1;
+    setMessages((prev) => [...prev, { role: "assistant", content: "" }]);
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    try {
+      // Get session token from window
+      const token = (window as any).__HERMES_SESSION_TOKEN__;
+      if (!token) {
+        throw new Error("Session token not available");
+      }
+
+      const response = await fetch("/api/chat?session_id=web", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ message: text }),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        const errText = await response.text().catch(() => response.statusText);
+        throw new Error(`${response.status}: ${errText}`);
+      }
+
+      const reader = response.body?.getReader();
+      if (!reader) {
+        throw new Error("ReadableStream not supported");
+      }
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let fullContent = "";
+      let currentEventType = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+
+        // Process complete SSE events from buffer
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || ""; // Keep incomplete line in buffer
+
+        for (const line of lines) {
+          if (line.startsWith("event: ")) {
+            currentEventType = line.slice(7);
+            continue;
+          }
+          if (line.startsWith("data: ")) {
+            const dataStr = line.slice(6);
+            if (!dataStr.trim()) continue;
+
+            let parsed: any;
+            try {
+              parsed = JSON.parse(dataStr);
+            } catch {
+              continue; // JSON parse error, skip
+            }
+
+            if (parsed.delta !== undefined) {
+              fullContent += parsed.delta;
+              setMessages((prev) => {
+                const updated = [...prev];
+                if (updated[assistantIndex]) {
+                  updated[assistantIndex] = {
+                    ...updated[assistantIndex],
+                    content: fullContent,
+                  };
+                }
+                return updated;
+              });
+            }
+
+            if (parsed.content && currentEventType === "done") {
+              // done event with full content
+              fullContent = parsed.content;
+            }
+
+            if (parsed.message && currentEventType === "error") {
+              throw new Error(parsed.message);
+            }
+          }
+        }
+      }
+    } catch (err: any) {
+      if (err.name === "AbortError") {
+        // User cancelled, keep partial content
+        return;
+      }
+      console.error("Chat error:", err);
+      setError(err.message || "Failed to send message");
+      // Remove the empty assistant message on error
+      setMessages((prev) => {
+        const updated = [...prev];
+        if (updated[assistantIndex]?.content === "") {
+          updated.splice(assistantIndex, 1);
+        }
+        return updated;
+      });
+    } finally {
+      setIsLoading(false);
+      abortRef.current = null;
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+  };
+
+  const clearChat = async () => {
+    try {
+      const token = (window as any).__HERMES_SESSION_TOKEN__;
+      if (token) {
+        await fetch("/api/chat/session?session_id=web", {
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${token}` },
+        });
+      }
+    } catch {
+      // ignore
+    }
+    setMessages([]);
+    setError(null);
+  };
+
+  const cancelRequest = () => {
+    abortRef.current?.abort();
+  };
+
+  return (
+    <div className="flex flex-col h-[calc(100vh-7rem)] sm:h-[calc(100vh-8rem)]">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-2">
+          <MessageSquare className="h-5 w-5 text-muted-foreground" />
+          <h1 className="text-base font-semibold">{t.chat.title}</h1>
+          {messages.length > 0 && (
+            <Badge variant="secondary" className="text-xs">
+              {messages.length} {t.chat.messages}
+            </Badge>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          {modelInfo && (
+            <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <Cpu className="h-3.5 w-3.5" />
+              <span className="font-mono text-[11px]">{modelInfo}</span>
+            </div>
+          )}
+          {isLoading && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 text-xs"
+              onClick={cancelRequest}
+            >
+              {t.chat.cancel}
+            </Button>
+          )}
+          {messages.length > 0 && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 text-xs"
+              onClick={clearChat}
+              disabled={isLoading}
+            >
+              <Trash2 className="h-3 w-3 mr-1" />
+              {t.chat.clear}
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {/* Messages area */}
+      <div className="flex-1 overflow-y-auto pr-2 space-y-4 min-h-0">
+        {messages.length === 0 && !isLoading && (
+          <div className="flex flex-col items-center justify-center h-full text-muted-foreground">
+            <MessageSquare className="h-12 w-12 mb-4 opacity-20" />
+            <p className="text-sm font-medium">{t.chat.empty}</p>
+            <p className="text-xs mt-1 text-muted-foreground/60">
+              {t.chat.emptyHint}
+            </p>
+          </div>
+        )}
+
+        {messages.map((msg, i) => (
+          <div
+            key={i}
+            className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
+          >
+            <div
+              className={`max-w-[85%] sm:max-w-[75%] rounded-lg px-4 py-3 ${
+                msg.role === "user"
+                  ? "bg-primary/15 text-foreground"
+                  : "bg-secondary/40 border border-border text-foreground"
+              }`}
+            >
+              <div className="flex items-center gap-2 mb-1">
+                <span
+                  className={`text-[10px] font-semibold uppercase tracking-wider ${
+                    msg.role === "user"
+                      ? "text-primary/70"
+                      : "text-success/70"
+                  }`}
+                >
+                  {msg.role === "user" ? t.chat.you : t.chat.assistant}
+                </span>
+              </div>
+              {msg.content ? (
+                msg.role === "user" ? (
+                  <p className="text-sm whitespace-pre-wrap leading-relaxed">
+                    {msg.content}
+                  </p>
+                ) : (
+                  <Markdown content={msg.content} />
+                )
+              ) : (
+                <div className="flex items-center gap-2 py-1">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+                  <span className="text-xs text-muted-foreground">
+                    {t.chat.thinking}
+                  </span>
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
+        <div ref={messagesEndRef} />
+      </div>
+
+      {/* Error banner */}
+      {error && (
+        <div className="mt-2 p-2 border border-destructive/30 bg-destructive/10 text-destructive text-xs rounded">
+          {error}
+        </div>
+      )}
+
+      {/* Input area */}
+      <div className="mt-4 flex gap-2">
+        <div className="flex-1 relative">
+          <textarea
+            ref={inputRef}
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder={t.chat.placeholder}
+            disabled={isLoading}
+            rows={1}
+            className="w-full resize-none rounded-lg border border-border bg-background/50 px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50 min-h-[42px] max-h-[120px]"
+            style={{
+              height: "auto",
+              minHeight: "42px",
+              maxHeight: "120px",
+            }}
+            onInput={(e) => {
+              const target = e.target as HTMLTextAreaElement;
+              target.style.height = "auto";
+              target.style.height = `${Math.min(target.scrollHeight, 120)}px`;
+            }}
+          />
+        </div>
+        <Button
+          size="icon"
+          className="h-[42px] w-[42px] shrink-0"
+          disabled={!input.trim() || isLoading}
+          onClick={sendMessage}
+        >
+          {isLoading ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <Send className="h-4 w-4" />
+          )}
+        </Button>
+      </div>
+
+      {/* Keyboard hint */}
+      <p className="text-[10px] text-muted-foreground/40 mt-1.5 text-center">
+        {t.chat.enterToSend}
+      </p>
+    </div>
+  );
+}

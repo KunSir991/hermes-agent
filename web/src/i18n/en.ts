@@ -54,6 +54,7 @@ export const en: Translations = {
     },
     nav: {
       status: "Status",
+      chat: "Chat",
       sessions: "Sessions",
       analytics: "Analytics",
       logs: "Logs",
@@ -274,5 +275,21 @@ export const en: Translations = {
 
   language: {
     switchTo: "Switch to Chinese",
+  },
+
+  chat: {
+    title: "Chat",
+    placeholder: "Type a message...",
+    send: "Send",
+    cancel: "Cancel",
+    clear: "Clear",
+    empty: "No messages yet",
+    emptyHint: "Send a message to start a conversation",
+    thinking: "Thinking...",
+    you: "You",
+    assistant: "Assistant",
+    messages: "messages",
+    enterToSend: "Press Enter to send, Shift+Enter for new line",
+    error: "Error",
   },
 };

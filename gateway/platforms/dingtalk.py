@@ -60,7 +60,6 @@ _DINGTALK_WEBHOOK_RE = re.compile(r'^https://(oapi|api)\.dingtalk\.com/')
 
 def check_dingtalk_requirements() -> bool:
     """Check if DingTalk dependencies are available.
-
     Note: Credential checks are deferred to DingTalkAdapter.connect(),
     which supports both environment variables and config.yaml (extra).
     """
@@ -317,7 +316,11 @@ class _IncomingHandler(ChatbotHandler if DINGTALK_STREAM_AVAILABLE else object):
 
     async def process(self, message: "CallbackMessage"):
         """Called by dingtalk-stream in its async loop when a message arrives.
+<<<<<<< HEAD
 
+=======
+        
+>>>>>>> 3b151182 (保存本地对钉钉平台的修改)
         The SDK passes a CallbackMessage whose .data dict contains the actual
         ChatbotMessage fields. We must convert it before forwarding to the adapter.
         """
@@ -341,4 +344,8 @@ class _IncomingHandler(ChatbotHandler if DINGTALK_STREAM_AVAILABLE else object):
         except Exception:
             logger.exception("[DingTalk] Error processing incoming message")
 
+<<<<<<< HEAD
         return (dingtalk_stream.AckMessage.STATUS_OK, "OK")
+=======
+        return (dingtalk_stream.AckMessage.STATUS_OK, "OK")
+>>>>>>> 3b151182 (保存本地对钉钉平台的修改)
