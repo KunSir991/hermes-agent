@@ -68,4 +68,12 @@ if [ -d "$INSTALL_DIR/skills" ]; then
     python3 "$INSTALL_DIR/tools/skills_sync.py"
 fi
 
+# --- Auto-start Web UI dashboard in background ---
+DASHBOARD_PORT="${HERMES_DASHBOARD_PORT:-9119}"
+DASHBOARD_HOST="${HERMES_DASHBOARD_HOST:-0.0.0.0}"
+if [ "${HERMES_DASHBOARD_DISABLED:-}" != "1" ]; then
+    echo "Starting Web UI dashboard on http://${DASHBOARD_HOST}:${DASHBOARD_PORT}"
+    hermes dashboard --host "$DASHBOARD_HOST" --port "$DASHBOARD_PORT" --no-open --insecure &
+fi
+
 exec hermes "$@"
