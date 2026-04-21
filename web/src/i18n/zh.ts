@@ -54,7 +54,6 @@ export const zh: Translations = {
     },
     nav: {
       status: "状态",
-      chat: "对话",
       sessions: "会话",
       analytics: "分析",
       logs: "日志",
@@ -116,6 +115,11 @@ export const zh: Translations = {
     dailyTokenUsage: "每日 Token 用量",
     dailyBreakdown: "每日明细",
     perModelBreakdown: "模型用量明细",
+    topSkills: "常用技能",
+    skill: "技能",
+    loads: "代理加载",
+    edits: "代理管理",
+    lastUsed: "最近使用",
     input: "输入",
     output: "输出",
     total: "总计",
@@ -291,5 +295,10 @@ export const zh: Translations = {
     messages: "条消息",
     enterToSend: "按 Enter 发送，Shift+Enter 换行",
     error: "错误",
+  },
+
+  theme: {
+    title: "主题",
+    switchTheme: "切换主题",
   },
 };

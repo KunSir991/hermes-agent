@@ -56,7 +56,6 @@ export interface Translations {
     };
     nav: {
       status: string;
-      chat: string;
       sessions: string;
       analytics: string;
       logs: string;
@@ -121,6 +120,11 @@ export interface Translations {
     dailyTokenUsage: string;
     dailyBreakdown: string;
     perModelBreakdown: string;
+    topSkills: string;
+    skill: string;
+    loads: string;
+    edits: string;
+    lastUsed: string;
     input: string;
     output: string;
     total: string;
@@ -304,5 +308,11 @@ export interface Translations {
     messages: string;
     enterToSend: string;
     error: string;
+  };
+
+  // ── Theme switcher ──
+  theme: {
+    title: string;
+    switchTheme: string;
   };
 }
