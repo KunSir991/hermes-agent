@@ -2208,32 +2208,32 @@ def _create_web_agent(
 ):
     """Create an AIAgent instance for Web UI chat.
 
-    Follows the same pattern as TUI gateway (_make_agent): only pass model
-    name and let AIAgent resolve provider, base_url, and api_key internally
-    via the centralized provider router.  This ensures .env credentials
-    (e.g. DASHSCOPE_API_KEY) are picked up from os.environ — matching the
-    CLI and TUI behaviour exactly.
+    Uses resolve_runtime_provider() to resolve provider, api_key, and
+    base_url — the same function used by CLI and gateway.  This reads
+    config.yaml for provider/base_url and resolves api_key from env
+    vars (e.g. DASHSCOPE_API_KEY for alibaba provider).
     """
     from run_agent import AIAgent  # module-level code loads .env
+    from hermes_cli.runtime_provider import resolve_runtime_provider
 
+    # --- Resolve credentials (same pattern as gateway/run.py) ----------
+    try:
+        runtime = resolve_runtime_provider()
+    except Exception as exc:
+        _log.error("Failed to resolve runtime provider: %s", exc)
+        raise
+
+    # --- Resolve model name -------------------------------------------
     config = load_config()
     model_cfg = config.get("model", {})
-
     if isinstance(model_cfg, dict):
         model_name = model_cfg.get("default", "")
-        provider = model_cfg.get("provider", "") or ""
     else:
         model_name = str(model_cfg) if model_cfg else ""
-        provider = ""
-
     if not model_name:
         model_name = os.getenv("HERMES_MODEL", "anthropic/claude-sonnet-4")
 
-    # Normalise provider: "auto" is the same as unset for AIAgent
-    if provider.lower() in ("auto", ""):
-        provider = ""
-
-    # Ephemeral system prompt from config (same pattern as TUI gateway)
+    # --- Ephemeral system prompt from config --------------------------
     agent_cfg = config.get("agent", {})
     system_prompt = ""
     if isinstance(agent_cfg, dict):
@@ -2243,13 +2243,12 @@ def _create_web_agent(
             if isinstance(personalities, dict):
                 system_prompt = personalities.get("helpful", "") or ""
 
-    # Pass provider so AIAgent's internal router knows which env var to
-    # read (e.g. provider="alibaba" → DASHSCOPE_API_KEY).  Do NOT pass
-    # api_key or base_url — let the router resolve them from os.environ
-    # so .env credentials are always picked up.
     return AIAgent(
         model=model_name,
-        provider=provider or None,
+        api_key=runtime.get("api_key"),
+        base_url=runtime.get("base_url"),
+        provider=runtime.get("provider"),
+        api_mode=runtime.get("api_mode"),
         platform="web",
         session_id=session_id,
         quiet_mode=True,
