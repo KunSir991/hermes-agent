@@ -2182,6 +2182,17 @@ class ChatMessage(BaseModel):
 _chat_sessions: Dict[str, List[Dict[str, str]]] = {}
 _chat_sessions_lock = threading.Lock()
 
+# Lazy-init SessionDB for persistent session storage (same as TUI gateway)
+_web_session_db = None
+
+
+def _get_web_session_db():
+    global _web_session_db
+    if _web_session_db is None:
+        from hermes_state import SessionDB
+        _web_session_db = SessionDB()
+    return _web_session_db
+
 
 def _get_or_create_chat_session(session_id: str) -> List[Dict[str, str]]:
     """Get or create a chat session history."""
@@ -2254,6 +2265,7 @@ def _create_web_agent(
         quiet_mode=True,
         max_iterations=30,
         ephemeral_system_prompt=system_prompt or None,
+        session_db=_get_web_session_db(),
         stream_delta_callback=stream_delta_callback,
         tool_progress_callback=tool_progress_callback,
         tool_start_callback=tool_start_callback,
