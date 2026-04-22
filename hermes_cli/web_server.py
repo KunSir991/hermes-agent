@@ -2208,26 +2208,21 @@ def _create_web_agent(
 ):
     """Create an AIAgent instance for Web UI chat.
 
-    Reads model/provider/api_key from config.yaml and environment,
-    same as the CLI and TUI gateway.  AIAgent handles system prompt
-    construction, tool discovery, memory, and provider resolution
-    internally — no need for _build_chat_system_prompt().
+    Follows the same pattern as TUI gateway (_make_agent): only pass model
+    name and let AIAgent resolve provider, base_url, and api_key internally
+    via the centralized provider router.  This ensures .env credentials
+    (e.g. DASHSCOPE_API_KEY) are picked up from os.environ — matching the
+    CLI and TUI behaviour exactly.
     """
-    from run_agent import AIAgent
+    from run_agent import AIAgent  # module-level code loads .env
 
     config = load_config()
     model_cfg = config.get("model", {})
 
     if isinstance(model_cfg, dict):
         model_name = model_cfg.get("default", "")
-        provider = model_cfg.get("provider", "")
-        base_url = model_cfg.get("base_url", "")
-        api_key = model_cfg.get("api_key", "")
     else:
         model_name = str(model_cfg) if model_cfg else ""
-        provider = ""
-        base_url = ""
-        api_key = ""
 
     if not model_name:
         model_name = os.getenv("HERMES_MODEL", "anthropic/claude-sonnet-4")
@@ -2242,11 +2237,13 @@ def _create_web_agent(
             if isinstance(personalities, dict):
                 system_prompt = personalities.get("helpful", "") or ""
 
+    # Do NOT pass provider/base_url/api_key explicitly — let AIAgent's
+    # internal provider router resolve them from config + os.environ.
+    # This is critical: the .env file stores DASHSCOPE_API_KEY etc. and
+    # the router knows how to look them up.  Passing empty/stale values
+    # from config.yaml bypasses this resolution and causes 401 errors.
     return AIAgent(
         model=model_name,
-        provider=provider or None,
-        base_url=base_url or None,
-        api_key=api_key or None,
         platform="web",
         session_id=session_id,
         quiet_mode=True,
