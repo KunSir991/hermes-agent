@@ -2221,11 +2221,17 @@ def _create_web_agent(
 
     if isinstance(model_cfg, dict):
         model_name = model_cfg.get("default", "")
+        provider = model_cfg.get("provider", "") or ""
     else:
         model_name = str(model_cfg) if model_cfg else ""
+        provider = ""
 
     if not model_name:
         model_name = os.getenv("HERMES_MODEL", "anthropic/claude-sonnet-4")
+
+    # Normalise provider: "auto" is the same as unset for AIAgent
+    if provider.lower() in ("auto", ""):
+        provider = ""
 
     # Ephemeral system prompt from config (same pattern as TUI gateway)
     agent_cfg = config.get("agent", {})
@@ -2237,13 +2243,13 @@ def _create_web_agent(
             if isinstance(personalities, dict):
                 system_prompt = personalities.get("helpful", "") or ""
 
-    # Do NOT pass provider/base_url/api_key explicitly — let AIAgent's
-    # internal provider router resolve them from config + os.environ.
-    # This is critical: the .env file stores DASHSCOPE_API_KEY etc. and
-    # the router knows how to look them up.  Passing empty/stale values
-    # from config.yaml bypasses this resolution and causes 401 errors.
+    # Pass provider so AIAgent's internal router knows which env var to
+    # read (e.g. provider="alibaba" → DASHSCOPE_API_KEY).  Do NOT pass
+    # api_key or base_url — let the router resolve them from os.environ
+    # so .env credentials are always picked up.
     return AIAgent(
         model=model_name,
+        provider=provider or None,
         platform="web",
         session_id=session_id,
         quiet_mode=True,
