@@ -2558,8 +2558,16 @@ def _build_chat_system_prompt(config: Dict[str, Any], model_name: str = "", prov
     # Provider-specific identity enforcement — matches run_agent.py logic.
     # Alibaba/DashScope Qwen models have a strong built-in identity that
     # overrides weak system prompts.  Explicitly tell the model its role.
+    # Detect via provider string, model name, OR base_url since the config
+    # provider field may be "auto" even when DashScope is the actual backend.
     provider_lower = (provider or "").lower()
-    if provider_lower in ("alibaba", "dashscope", "qwen", "aliyun"):
+    model_lower = (model_name or "").lower()
+    _is_qwen = (
+        provider_lower in ("alibaba", "dashscope", "qwen", "aliyun")
+        or "qwen" in model_lower
+        or "dashscope" in (config.get("model", {}).get("base_url", "") if isinstance(config.get("model"), dict) else "").lower()
+    )
+    if _is_qwen:
         _model_short = model_name.split("/")[-1] if "/" in model_name else model_name
         parts.append(
             f"IMPORTANT: Your name is Hermes Agent. You are NOT Qwen or 通义千问. "
