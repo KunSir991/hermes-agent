@@ -2444,12 +2444,12 @@ async def chat_message_non_stream(body: ChatMessage, request: Request):
 
     # Build system prompt
     config = load_config()
-    system_prompt = _build_chat_system_prompt(config)
+    chat_config = _resolve_chat_config(config)
+    system_prompt = _build_chat_system_prompt(config, model_name=chat_config["model_name"], provider=chat_config["provider"])
 
     messages = [{"role": "system", "content": system_prompt}] + history
 
-    # Resolve model / credentials
-    chat_config = _resolve_chat_config(config)
+    # Resolve model / credentials (already resolved above for system prompt)
     model_name = chat_config["model_name"]
     base_url = chat_config["base_url"]
     api_key = chat_config["api_key"]
