@@ -196,8 +196,22 @@ export default function ChatPage() {
               });
             }
 
-            if (parsed.content && currentEventType === "done") {
-              fullContent = parsed.content;
+            if (currentEventType === "done") {
+              if (parsed.content) {
+                fullContent = parsed.content;
+              }
+              // Clear thinking state on done
+              setMessages((prev) => {
+                const updated = [...prev];
+                if (updated[assistantIndex]) {
+                  updated[assistantIndex] = {
+                    ...updated[assistantIndex],
+                    content: fullContent || parsed.content || "",
+                    thinking: undefined,
+                  };
+                }
+                return updated;
+              });
             }
 
             if (parsed.message && currentEventType === "error") {

@@ -2312,7 +2312,14 @@ async def chat_message(body: ChatMessage, request: Request):
                 body.message,
                 conversation_history=conv_history or None,
             )
-            final = result.get("final_response", "") if isinstance(result, dict) else str(result)
+            if isinstance(result, dict):
+                final = result.get("final_response") or ""
+                error = result.get("error")
+                if not final and error:
+                    _put({"type": "error", "message": error})
+                    return
+            else:
+                final = str(result) if result else ""
             _put({"type": "done", "content": final})
         except Exception as exc:
             _log.exception("AIAgent chat failed")
@@ -2370,7 +2377,13 @@ async def chat_message_non_stream(body: ChatMessage, request: Request):
             body.message,
             conversation_history=conv_history or None,
         )
-        return result.get("final_response", "") if isinstance(result, dict) else str(result)
+        if isinstance(result, dict):
+            error = result.get("error")
+            final = result.get("final_response") or ""
+            if not final and error:
+                raise RuntimeError(error)
+            return final
+        return str(result) if result else ""
 
     try:
         content = await asyncio.to_thread(_run)
