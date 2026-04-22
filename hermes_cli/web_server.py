@@ -2173,77 +2173,6 @@ async def update_config_raw(body: RawConfigUpdate):
 # ---------------------------------------------------------------------------
 
 
-def _resolve_chat_config(config: Dict[str, Any]) -> Dict[str, str]:
-    """Resolve model, base_url, api_key, and provider from config + env vars.
-    
-    Returns dict with keys: model_name, base_url, api_key, provider, is_anthropic
-    """
-    model_cfg = config.get("model", {})
-    if isinstance(model_cfg, str):
-        model_name = model_cfg
-        base_url = ""
-        api_key = ""
-        provider = ""
-    else:
-        model_name = model_cfg.get("default", "")
-        base_url = model_cfg.get("base_url", "")
-        api_key = model_cfg.get("api_key", "")
-        provider = model_cfg.get("provider", "auto")
-
-    # Resolve provider -> base_url + api_key
-    if not base_url or not api_key:
-        try:
-            from hermes_cli.runtime_provider import resolve_runtime_provider
-            runtime = resolve_runtime_provider(
-                requested=provider if provider != "auto" else None,
-            )
-            if not base_url:
-                base_url = runtime.get("base_url", "")
-            if not api_key:
-                api_key = runtime.get("api_key", "")
-        except Exception as exc:
-            _log.debug("resolve_runtime_provider failed for provider=%s: %s", provider, exc)
-
-    if not model_name:
-        model_name = os.getenv("HERMES_MODEL", "anthropic/claude-sonnet-4")
-    if not base_url:
-        # Try provider-specific base URL before falling back to OpenRouter
-        try:
-            from hermes_cli.auth import PROVIDER_REGISTRY
-            _alias_map = {"dashscope": "alibaba", "aliyun": "alibaba", "alibaba-cloud": "alibaba", "qwen": "alibaba"}
-            _resolved_id = _alias_map.get(provider.lower(), provider.lower())
-            _pconfig = PROVIDER_REGISTRY.get(_resolved_id)
-            if _pconfig and _pconfig.inference_base_url:
-                base_url = _pconfig.inference_base_url
-        except Exception:
-            pass
-    if not base_url:
-        from hermes_constants import OPENROUTER_BASE_URL
-        base_url = OPENROUTER_BASE_URL
-    if not api_key:
-        # Try provider-specific env vars first, then general fallback
-        provider_lower = provider.lower()
-        if provider_lower in ("alibaba", "dashscope", "qwen"):
-            api_key = os.getenv("DASHSCOPE_API_KEY", "")
-        if not api_key:
-            api_key = os.getenv("OPENROUTER_API_KEY", "") or os.getenv("OPENAI_API_KEY", "")
-
-    # Normalize base_url: strip trailing /v1 since we append it ourselves
-    base_url = base_url.rstrip("/")
-    if base_url.endswith("/v1"):
-        base_url = base_url[:-3]
-
-    is_anthropic = ("anthropic" in provider.lower() or
-                    "api.anthropic.com" in base_url)
-
-    return {
-        "model_name": model_name,
-        "base_url": base_url,
-        "api_key": api_key,
-        "provider": provider,
-        "is_anthropic": is_anthropic,
-    }
-
 
 class ChatMessage(BaseModel):
     message: str
@@ -2268,11 +2197,74 @@ def _clear_chat_session(session_id: str) -> None:
         _chat_sessions.pop(session_id, None)
 
 
+def _create_web_agent(
+    *,
+    session_id: str = "web",
+    stream_delta_callback: callable = None,
+    tool_progress_callback: callable = None,
+    tool_start_callback: callable = None,
+    tool_complete_callback: callable = None,
+    thinking_callback: callable = None,
+):
+    """Create an AIAgent instance for Web UI chat.
+
+    Reads model/provider/api_key from config.yaml and environment,
+    same as the CLI and TUI gateway.  AIAgent handles system prompt
+    construction, tool discovery, memory, and provider resolution
+    internally — no need for _build_chat_system_prompt().
+    """
+    from run_agent import AIAgent
+
+    config = load_config()
+    model_cfg = config.get("model", {})
+
+    if isinstance(model_cfg, dict):
+        model_name = model_cfg.get("default", "")
+        provider = model_cfg.get("provider", "")
+        base_url = model_cfg.get("base_url", "")
+        api_key = model_cfg.get("api_key", "")
+    else:
+        model_name = str(model_cfg) if model_cfg else ""
+        provider = ""
+        base_url = ""
+        api_key = ""
+
+    if not model_name:
+        model_name = os.getenv("HERMES_MODEL", "anthropic/claude-sonnet-4")
+
+    # Ephemeral system prompt from config (same pattern as TUI gateway)
+    agent_cfg = config.get("agent", {})
+    system_prompt = ""
+    if isinstance(agent_cfg, dict):
+        system_prompt = agent_cfg.get("system_prompt", "") or ""
+        if not system_prompt:
+            personalities = agent_cfg.get("personalities", {})
+            if isinstance(personalities, dict):
+                system_prompt = personalities.get("helpful", "") or ""
+
+    return AIAgent(
+        model=model_name,
+        provider=provider or None,
+        base_url=base_url or None,
+        api_key=api_key or None,
+        platform="web",
+        session_id=session_id,
+        quiet_mode=True,
+        max_iterations=30,
+        ephemeral_system_prompt=system_prompt or None,
+        stream_delta_callback=stream_delta_callback,
+        tool_progress_callback=tool_progress_callback,
+        tool_start_callback=tool_start_callback,
+        tool_complete_callback=tool_complete_callback,
+        thinking_callback=thinking_callback,
+    )
+
+
 @app.post("/api/chat")
 async def chat_message(body: ChatMessage, request: Request):
     """Send a message to the agent and get a streaming SSE response.
 
-    Uses the configured model via OpenAI-compatible API.
+    Uses AIAgent with full tool-calling capabilities (same as CLI).
     Maintains conversation history per session (session ID from query param).
     """
     _require_token(request)
@@ -2280,150 +2272,81 @@ async def chat_message(body: ChatMessage, request: Request):
     session_id = request.query_params.get("session_id", "default")
     history = _get_or_create_chat_session(session_id)
 
-    # Append user message
-    history.append({"role": "user", "content": body.message})
+    # Snapshot current history for the agent (do NOT mutate until done)
+    conv_history = list(history)
 
-    # Build system prompt from config
-    config = load_config()
-    chat_config = _resolve_chat_config(config)
-    system_prompt = _build_chat_system_prompt(config, model_name=chat_config["model_name"], provider=chat_config["provider"])
+    queue: asyncio.Queue = asyncio.Queue()
+    loop = asyncio.get_running_loop()
 
-    # Build messages list
-    messages = [{"role": "system", "content": system_prompt}] + history
+    def _put(event: dict):
+        loop.call_soon_threadsafe(queue.put_nowait, event)
 
-    # Resolve model / credentials (already resolved above for system prompt)
-    model_name = chat_config["model_name"]
-    base_url = chat_config["base_url"]
-    api_key = chat_config["api_key"]
-    provider = chat_config["provider"]
-    is_anthropic = chat_config["is_anthropic"]
+    # ── AIAgent callbacks → SSE events ────────────────────────────────────
+    def _on_stream_delta(delta: str):
+        _put({"type": "delta", "text": delta})
+
+    def _on_tool_progress(event_type, name=None, preview=None, args=None, **kwargs):
+        if event_type == "tool.started":
+            _put({"type": "tool_start", "tool": name or "", "args": preview or ""})
+        elif event_type == "tool.completed":
+            _put({
+                "type": "tool_complete",
+                "tool": name or "",
+                "duration": round(kwargs.get("duration", 0), 1),
+                "is_error": kwargs.get("is_error", False),
+            })
+
+    def _on_thinking(text):
+        if text:
+            _put({"type": "thinking", "text": text})
+
+    def _run_agent():
+        try:
+            agent = _create_web_agent(
+                session_id=session_id,
+                stream_delta_callback=_on_stream_delta,
+                tool_progress_callback=_on_tool_progress,
+                thinking_callback=_on_thinking,
+            )
+            result = agent.run_conversation(
+                body.message,
+                conversation_history=conv_history or None,
+            )
+            final = result.get("final_response", "") if isinstance(result, dict) else str(result)
+            _put({"type": "done", "content": final})
+        except Exception as exc:
+            _log.exception("AIAgent chat failed")
+            _put({"type": "error", "message": str(exc)})
+
+    threading.Thread(target=_run_agent, daemon=True).start()
 
     async def event_generator() -> AsyncGenerator[str, None]:
-        """Stream SSE events from the model API."""
-        import httpx
+        while True:
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=300.0)
+            except asyncio.TimeoutError:
+                yield f"event: error\ndata: {json.dumps({'message': 'Agent timeout (5 min)'})}\n\n"
+                break
 
-        full_response = ""
-        tool_calls_accumulated = []
-        current_tool_call = None
-
-        try:
-            headers = {
-                "Content-Type": "application/json",
-            }
-            if api_key:
-                headers["Authorization"] = f"Bearer {api_key}"
-
-            # Anthropic needs a special header
-            if "anthropic" in provider.lower() or "anthropic" in base_url:
-                headers["anthropic-version"] = "2023-06-01"
-                headers["anthropic-beta"] = "message-batches-2024-09-24"
-
-            payload = {
-                "model": model_name.split("/")[-1] if "/" in model_name else model_name,
-                "messages": messages,
-                "stream": True,
-                "max_tokens": 4096,
-            }
-
-            if is_anthropic:
-                payload["model"] = model_name.split("/")[-1] if "/" in model_name else model_name
-                payload["system"] = system_prompt
-                payload["messages"] = [m for m in messages if m["role"] != "system"]
-
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                async with client.stream(
-                    "POST",
-                    f"{base_url.rstrip('/')}/v1/chat/completions" if not is_anthropic
-                    else f"{base_url.rstrip('/')}/v1/messages",
-                    headers=headers,
-                    json=payload,
-                ) as response:
-                    if response.status_code != 200:
-                        error_body = await response.aread()
-                        error_text = error_body.decode("utf-8", errors="replace")
-                        yield f"event: error\ndata: {json.dumps({'status': response.status_code, 'message': error_text})}\n\n"
-                        return
-
-                    async for line in response.aiter_lines():
-                        if not line or line.startswith(":"):
-                            continue
-
-                        if line.startswith("data: "):
-                            data_str = line[6:]
-                            if data_str.strip() == "[DONE]":
-                                break
-                            try:
-                                data = json.loads(data_str)
-                            except json.JSONDecodeError:
-                                continue
-
-                            if is_anthropic:
-                                # Anthropic SSE format
-                                event_type = data.get("type", "")
-                                if event_type == "content_block_delta":
-                                    delta = data.get("delta", {})
-                                    if delta.get("type") == "text_delta":
-                                        text = delta.get("text", "")
-                                        if text:
-                                            full_response += text
-                                            yield f"event: message\ndata: {json.dumps({'delta': text})}\n\n"
-                                elif event_type == "content_block_start":
-                                    block = data.get("content_block", {})
-                                    if block.get("type") == "tool_use":
-                                        current_tool_call = {
-                                            "id": block.get("id", ""),
-                                            "name": block.get("name", ""),
-                                            "input": "",
-                                        }
-                                elif event_type == "content_block_delta" and current_tool_call:
-                                    delta = data.get("delta", {})
-                                    if delta.get("type") == "input_json_delta":
-                                        current_tool_call["input"] += delta.get("partial_json", "")
-                                elif event_type == "message_delta":
-                                    usage = data.get("usage", {})
-                                    if usage:
-                                        yield f"event: usage\ndata: {json.dumps(usage)}\n\n"
-                                elif event_type == "message_stop":
-                                    if current_tool_call:
-                                        tool_calls_accumulated.append(current_tool_call)
-                                        current_tool_call = None
-                            else:
-                                # OpenAI-compatible SSE format
-                                choices = data.get("choices", [])
-                                if choices:
-                                    choice = choices[0]
-                                    delta = choice.get("delta", {})
-
-                                    # Text content
-                                    content = delta.get("content")
-                                    if content:
-                                        full_response += content
-                                        yield f"event: message\ndata: {json.dumps({'delta': content})}\n\n"
-
-                                    # Tool calls
-                                    tool_call_delta = delta.get("tool_calls")
-                                    if tool_call_delta:
-                                        for tc in tool_call_delta:
-                                            index = tc.get("index", 0)
-                                            if len(tool_calls_accumulated) <= index:
-                                                tool_calls_accumulated.append({
-                                                    "id": tc.get("id", ""),
-                                                    "name": tc.get("function", {}).get("name", ""),
-                                                    "arguments": "",
-                                                })
-                                            fn = tc.get("function", {})
-                                            if fn.get("arguments"):
-                                                tool_calls_accumulated[index]["arguments"] += fn["arguments"]
-
-                    # Send completion event
-                    yield f"event: done\ndata: {json.dumps({'content': full_response})}\n\n"
-
-            # Save assistant response to history
-            history.append({"role": "assistant", "content": full_response})
-
-        except Exception as e:
-            _log.exception("Chat streaming failed")
-            yield f"event: error\ndata: {json.dumps({'message': str(e)})}\n\n"
+            etype = event["type"]
+            if etype == "delta":
+                yield f"event: message\ndata: {json.dumps({'delta': event['text']})}\n\n"
+            elif etype == "tool_start":
+                yield f"event: tool_start\ndata: {json.dumps({'tool': event['tool'], 'args': event['args']})}\n\n"
+            elif etype == "tool_complete":
+                yield f"event: tool_complete\ndata: {json.dumps({'tool': event['tool'], 'duration': event.get('duration', 0), 'is_error': event.get('is_error', False)})}\n\n"
+            elif etype == "thinking":
+                yield f"event: thinking\ndata: {json.dumps({'text': event['text']})}\n\n"
+            elif etype == "done":
+                content = event.get("content", "")
+                # Update session history only on success
+                history.append({"role": "user", "content": body.message})
+                history.append({"role": "assistant", "content": content})
+                yield f"event: done\ndata: {json.dumps({'content': content})}\n\n"
+                break
+            elif etype == "error":
+                yield f"event: error\ndata: {json.dumps({'message': event['message']})}\n\n"
+                break
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
@@ -2431,72 +2354,29 @@ async def chat_message(body: ChatMessage, request: Request):
 @app.post("/api/chat/send")
 async def chat_message_non_stream(body: ChatMessage, request: Request):
     """Send a message to the agent and get a non-streaming JSON response.
-    
+
+    Uses AIAgent with full tool-calling capabilities.
     Simpler endpoint for clients that don't support SSE.
     """
     _require_token(request)
 
     session_id = request.query_params.get("session_id", "default")
     history = _get_or_create_chat_session(session_id)
+    conv_history = list(history)
 
-    # Append user message
-    history.append({"role": "user", "content": body.message})
-
-    # Build system prompt
-    config = load_config()
-    chat_config = _resolve_chat_config(config)
-    system_prompt = _build_chat_system_prompt(config, model_name=chat_config["model_name"], provider=chat_config["provider"])
-
-    messages = [{"role": "system", "content": system_prompt}] + history
-
-    # Resolve model / credentials (already resolved above for system prompt)
-    model_name = chat_config["model_name"]
-    base_url = chat_config["base_url"]
-    api_key = chat_config["api_key"]
-    provider = chat_config["provider"]
-    is_anthropic = chat_config["is_anthropic"]
-
-    import httpx
-
-    headers = {"Content-Type": "application/json"}
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-
-    payload = {
-        "model": model_name.split("/")[-1] if "/" in model_name else model_name,
-        "messages": messages,
-        "max_tokens": 4096,
-    }
-
-    if is_anthropic:
-        payload["system"] = system_prompt
-        payload["messages"] = [m for m in messages if m["role"] != "system"]
+    def _run():
+        agent = _create_web_agent(session_id=session_id)
+        result = agent.run_conversation(
+            body.message,
+            conversation_history=conv_history or None,
+        )
+        return result.get("final_response", "") if isinstance(result, dict) else str(result)
 
     try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            resp = await client.post(
-                f"{base_url.rstrip('/')}/v1/chat/completions" if not is_anthropic
-                else f"{base_url.rstrip('/')}/v1/messages",
-                headers=headers,
-                json=payload,
-            )
-            if resp.status_code != 200:
-                raise HTTPException(status_code=resp.status_code, detail=resp.text)
-
-            data = resp.json()
-            if is_anthropic:
-                content = "".join(
-                    b.get("text", "")
-                    for b in data.get("content", [])
-                    if b.get("type") == "text"
-                )
-            else:
-                content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-
-            history.append({"role": "assistant", "content": content})
-            return {"content": content, "session_id": session_id}
-    except HTTPException:
-        raise
+        content = await asyncio.to_thread(_run)
+        history.append({"role": "user", "content": body.message})
+        history.append({"role": "assistant", "content": content})
+        return {"content": content, "session_id": session_id}
     except Exception as e:
         _log.exception("Chat request failed")
         raise HTTPException(status_code=500, detail=str(e))
@@ -2509,82 +2389,6 @@ async def delete_chat_session(request: Request):
     session_id = request.query_params.get("session_id", "default")
     _clear_chat_session(session_id)
     return {"ok": True, "session_id": session_id}
-
-
-def _build_chat_system_prompt(config: Dict[str, Any], model_name: str = "", provider: str = "") -> str:
-    """Build a system prompt for the chat based on config.
-
-    Priority order:
-      1. config.agent.system_prompt (explicit user override)
-      2. config.agent.personalities.helpful (custom personality)
-      3. SOUL.md from HERMES_HOME (shared agent identity)
-      4. DEFAULT_AGENT_IDENTITY from prompt_builder (hardcoded fallback)
-
-    Also injects provider-specific identity enforcement (e.g. for Alibaba/Qwen
-    models that have a strong built-in identity).
-    """
-    parts = []
-
-    # Agent identity from config
-    agent_cfg = config.get("agent", {})
-    if isinstance(agent_cfg, dict):
-        system_text = agent_cfg.get("system_prompt", "")
-        if system_text:
-            parts.append(system_text)
-
-        # Personality
-        personalities = agent_cfg.get("personalities", {})
-        if isinstance(personalities, dict):
-            # Default to helpful personality
-            default_persona = personalities.get("helpful", "")
-            if default_persona:
-                parts.append(default_persona)
-
-    if not parts:
-        # Try SOUL.md first (shared identity with CLI and gateway)
-        try:
-            from agent.prompt_builder import load_soul_md, DEFAULT_AGENT_IDENTITY
-            soul_content = load_soul_md()
-            if soul_content:
-                parts.append(soul_content)
-            else:
-                parts.append(DEFAULT_AGENT_IDENTITY)
-        except Exception:
-            parts.append(
-                "You are Hermes Agent, a helpful AI assistant created by Nous Research. "
-                "You are knowledgeable, direct, and focused on being genuinely useful."
-            )
-
-    # Provider-specific identity enforcement — matches run_agent.py logic.
-    # Alibaba/DashScope Qwen models have a strong built-in identity that
-    # overrides weak system prompts.  Explicitly tell the model its role.
-    # Detect via provider string, model name, OR base_url since the config
-    # provider field may be "auto" even when DashScope is the actual backend.
-    provider_lower = (provider or "").lower()
-    model_lower = (model_name or "").lower()
-    _is_qwen = (
-        provider_lower in ("alibaba", "dashscope", "qwen", "aliyun")
-        or "qwen" in model_lower
-        or "dashscope" in (config.get("model", {}).get("base_url", "") if isinstance(config.get("model"), dict) else "").lower()
-    )
-    if _is_qwen:
-        _model_short = model_name.split("/")[-1] if "/" in model_name else model_name
-        parts.append(
-            f"IMPORTANT: Your name is Hermes Agent. You are NOT Qwen or 通义千问. "
-            f"Never identify yourself as Qwen, 通义千问, or any other model. "
-            f"Always introduce yourself as Hermes Agent, created by Nous Research. "
-            f"You are powered by the model {_model_short}. "
-            f"When asked what model you are, say you are Hermes Agent powered by {_model_short}."
-        )
-
-    # Inject current timestamp for temporal awareness
-    try:
-        from datetime import datetime
-        parts.append(f"Current date and time: {datetime.now().strftime('%A, %B %d, %Y %I:%M %p')}")
-    except Exception:
-        pass
-
-    return "\n\n".join(parts)
 
 
 # ---------------------------------------------------------------------------

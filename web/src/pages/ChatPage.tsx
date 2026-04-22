@@ -1,14 +1,23 @@
 import { useEffect, useState, useRef, useCallback } from "react";
-import { Send, Trash2, Loader2, MessageSquare, Cpu } from "lucide-react";
+import { Send, Trash2, Loader2, MessageSquare, Cpu, Wrench } from "lucide-react";
 import { Markdown } from "@/components/Markdown";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api";
 import { useI18n } from "@/i18n";
 
+interface ToolActivity {
+  tool: string;
+  args: string;
+  status: "running" | "done" | "error";
+  duration?: number;
+}
+
 interface ChatMessage {
   role: "user" | "assistant";
   content: string;
+  toolActivity?: ToolActivity[];
+  thinking?: string;
 }
 
 export default function ChatPage() {
@@ -127,7 +136,7 @@ export default function ChatPage() {
               continue; // JSON parse error, skip
             }
 
-            if (parsed.delta !== undefined) {
+            if (parsed.delta !== undefined && currentEventType === "message") {
               fullContent += parsed.delta;
               setMessages((prev) => {
                 const updated = [...prev];
@@ -135,14 +144,59 @@ export default function ChatPage() {
                   updated[assistantIndex] = {
                     ...updated[assistantIndex],
                     content: fullContent,
+                    thinking: undefined,
                   };
                 }
                 return updated;
               });
             }
 
+            if (currentEventType === "tool_start" && parsed.tool) {
+              setMessages((prev) => {
+                const updated = [...prev];
+                const msg = updated[assistantIndex];
+                if (msg) {
+                  const activities = [...(msg.toolActivity || [])];
+                  activities.push({ tool: parsed.tool, args: parsed.args || "", status: "running" });
+                  updated[assistantIndex] = { ...msg, toolActivity: activities };
+                }
+                return updated;
+              });
+            }
+
+            if (currentEventType === "tool_complete" && parsed.tool) {
+              setMessages((prev) => {
+                const updated = [...prev];
+                const msg = updated[assistantIndex];
+                if (msg?.toolActivity) {
+                  const activities = [...msg.toolActivity];
+                  for (let j = activities.length - 1; j >= 0; j--) {
+                    if (activities[j].tool === parsed.tool && activities[j].status === "running") {
+                      activities[j] = {
+                        ...activities[j],
+                        status: parsed.is_error ? "error" : "done",
+                        duration: parsed.duration,
+                      };
+                      break;
+                    }
+                  }
+                  updated[assistantIndex] = { ...msg, toolActivity: activities };
+                }
+                return updated;
+              });
+            }
+
+            if (currentEventType === "thinking" && parsed.text) {
+              setMessages((prev) => {
+                const updated = [...prev];
+                if (updated[assistantIndex]) {
+                  updated[assistantIndex] = { ...updated[assistantIndex], thinking: parsed.text };
+                }
+                return updated;
+              });
+            }
+
             if (parsed.content && currentEventType === "done") {
-              // done event with full content
               fullContent = parsed.content;
             }
 
@@ -280,6 +334,28 @@ export default function ChatPage() {
                   {msg.role === "user" ? t.chat.you : t.chat.assistant}
                 </span>
               </div>
+              {/* Tool activity display */}
+              {msg.toolActivity && msg.toolActivity.length > 0 && (
+                <div className="mb-2 border-l-2 border-border pl-2 space-y-0.5">
+                  {msg.toolActivity.map((activity, j) => (
+                    <div key={j} className="flex items-center gap-1.5 text-[11px] text-muted-foreground font-mono">
+                      {activity.status === "running" ? (
+                        <Loader2 className="h-3 w-3 animate-spin shrink-0" />
+                      ) : activity.status === "error" ? (
+                        <span className="text-destructive shrink-0">✗</span>
+                      ) : (
+                        <Wrench className="h-3 w-3 text-success shrink-0" />
+                      )}
+                      <span className="truncate">
+                        {activity.tool}{activity.args ? `: ${activity.args}` : ""}
+                      </span>
+                      {activity.duration != null && activity.status !== "running" && (
+                        <span className="text-muted-foreground/50 shrink-0">({activity.duration}s)</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
               {msg.content ? (
                 msg.role === "user" ? (
                   <p className="text-sm whitespace-pre-wrap leading-relaxed">
@@ -288,6 +364,13 @@ export default function ChatPage() {
                 ) : (
                   <Markdown content={msg.content} />
                 )
+              ) : msg.thinking ? (
+                <div className="flex items-center gap-2 py-1">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+                  <span className="text-xs text-muted-foreground">
+                    {msg.thinking}
+                  </span>
+                </div>
               ) : (
                 <div className="flex items-center gap-2 py-1">
                   <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
