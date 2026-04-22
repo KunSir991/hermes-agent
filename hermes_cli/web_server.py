@@ -2294,10 +2294,17 @@ async def delete_chat_session(request: Request):
 
 
 def _build_chat_system_prompt(config: Dict[str, Any]) -> str:
-    """Build a system prompt for the chat based on config."""
+    """Build a system prompt for the chat based on config.
+
+    Priority order:
+      1. config.agent.system_prompt (explicit user override)
+      2. config.agent.personalities.helpful (custom personality)
+      3. SOUL.md from HERMES_HOME (shared agent identity)
+      4. DEFAULT_AGENT_IDENTITY from prompt_builder (hardcoded fallback)
+    """
     parts = []
 
-    # Agent identity
+    # Agent identity from config
     agent_cfg = config.get("agent", {})
     if isinstance(agent_cfg, dict):
         system_text = agent_cfg.get("system_prompt", "")
@@ -2313,10 +2320,26 @@ def _build_chat_system_prompt(config: Dict[str, Any]) -> str:
                 parts.append(default_persona)
 
     if not parts:
-        parts.append(
-            "You are Hermes Agent, a helpful AI assistant created by Nous Research. "
-            "You are knowledgeable, direct, and focused on being genuinely useful."
-        )
+        # Try SOUL.md first (shared identity with CLI and gateway)
+        try:
+            from agent.prompt_builder import load_soul_md, DEFAULT_AGENT_IDENTITY
+            soul_content = load_soul_md()
+            if soul_content:
+                parts.append(soul_content)
+            else:
+                parts.append(DEFAULT_AGENT_IDENTITY)
+        except Exception:
+            parts.append(
+                "You are Hermes Agent, a helpful AI assistant created by Nous Research. "
+                "You are knowledgeable, direct, and focused on being genuinely useful."
+            )
+
+    # Inject current timestamp for temporal awareness
+    try:
+        from datetime import datetime
+        parts.append(f"Current date and time: {datetime.now().strftime('%A, %B %d, %Y %I:%M %p')}")
+    except Exception:
+        pass
 
     return "\n\n".join(parts)
 
