@@ -2285,13 +2285,13 @@ async def chat_message(body: ChatMessage, request: Request):
 
     # Build system prompt from config
     config = load_config()
-    system_prompt = _build_chat_system_prompt(config)
+    chat_config = _resolve_chat_config(config)
+    system_prompt = _build_chat_system_prompt(config, model_name=chat_config["model_name"], provider=chat_config["provider"])
 
     # Build messages list
     messages = [{"role": "system", "content": system_prompt}] + history
 
-    # Resolve model / credentials
-    chat_config = _resolve_chat_config(config)
+    # Resolve model / credentials (already resolved above for system prompt)
     model_name = chat_config["model_name"]
     base_url = chat_config["base_url"]
     api_key = chat_config["api_key"]
@@ -2511,7 +2511,7 @@ async def delete_chat_session(request: Request):
     return {"ok": True, "session_id": session_id}
 
 
-def _build_chat_system_prompt(config: Dict[str, Any]) -> str:
+def _build_chat_system_prompt(config: Dict[str, Any], model_name: str = "", provider: str = "") -> str:
     """Build a system prompt for the chat based on config.
 
     Priority order:
@@ -2519,6 +2519,9 @@ def _build_chat_system_prompt(config: Dict[str, Any]) -> str:
       2. config.agent.personalities.helpful (custom personality)
       3. SOUL.md from HERMES_HOME (shared agent identity)
       4. DEFAULT_AGENT_IDENTITY from prompt_builder (hardcoded fallback)
+
+    Also injects provider-specific identity enforcement (e.g. for Alibaba/Qwen
+    models that have a strong built-in identity).
     """
     parts = []
 
@@ -2551,6 +2554,20 @@ def _build_chat_system_prompt(config: Dict[str, Any]) -> str:
                 "You are Hermes Agent, a helpful AI assistant created by Nous Research. "
                 "You are knowledgeable, direct, and focused on being genuinely useful."
             )
+
+    # Provider-specific identity enforcement — matches run_agent.py logic.
+    # Alibaba/DashScope Qwen models have a strong built-in identity that
+    # overrides weak system prompts.  Explicitly tell the model its role.
+    provider_lower = (provider or "").lower()
+    if provider_lower in ("alibaba", "dashscope", "qwen", "aliyun"):
+        _model_short = model_name.split("/")[-1] if "/" in model_name else model_name
+        parts.append(
+            f"IMPORTANT: Your name is Hermes Agent. You are NOT Qwen or 通义千问. "
+            f"Never identify yourself as Qwen, 通义千问, or any other model. "
+            f"Always introduce yourself as Hermes Agent, created by Nous Research. "
+            f"You are powered by the model {_model_short}. "
+            f"When asked what model you are, say you are Hermes Agent powered by {_model_short}."
+        )
 
     # Inject current timestamp for temporal awareness
     try:
