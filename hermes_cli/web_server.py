@@ -2316,7 +2316,6 @@ async def chat_message(body: ChatMessage, request: Request):
 
     def _run_agent():
         try:
-            print(f"[Web Chat DEBUG] Starting agent for message: {body.message[:50]}...", flush=True)
             agent = _create_web_agent(
                 session_id=session_id,
                 stream_delta_callback=_on_stream_delta,
@@ -2327,23 +2326,17 @@ async def chat_message(body: ChatMessage, request: Request):
                 body.message,
                 conversation_history=conv_history or None,
             )
-            print(f"[Web Chat DEBUG] run_conversation returned: type={type(result).__name__}", flush=True)
             if isinstance(result, dict):
                 final = result.get("final_response") or ""
                 error = result.get("error")
-                print(f"[Web Chat DEBUG] final_response length={len(final)}, error={error}", flush=True)
                 if error and not final:
                     _put({"type": "error", "message": error})
             else:
                 final = str(result) if result else ""
-                print(f"[Web Chat DEBUG] result is not dict, converted to string length={len(final)}", flush=True)
             # Always send done event, even if final is empty
-            print(f"[Web Chat DEBUG] Sending done event with content length={len(final)}", flush=True)
             _put({"type": "done", "content": final})
         except Exception as exc:
-            print(f"[Web Chat ERROR] AIAgent chat failed: {exc}", flush=True)
-            import traceback
-            traceback.print_exc()
+            _log.exception("AIAgent chat failed")
             _put({"type": "error", "message": str(exc)})
 
     threading.Thread(target=_run_agent, daemon=True).start()
