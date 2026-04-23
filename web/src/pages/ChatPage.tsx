@@ -28,7 +28,15 @@ export default function ChatPage() {
     try {
       const stored = localStorage.getItem("hermes-chat-messages");
       if (stored) {
-        return JSON.parse(stored);
+        const parsed = JSON.parse(stored);
+        // Clean up any stale thinking states from localStorage
+        return parsed.map((msg: ChatMessage) => ({
+          ...msg,
+          thinking: undefined,
+          toolActivity: msg.toolActivity?.map(activity => 
+            activity.status === "running" ? { ...activity, status: "done" as const } : activity
+          ),
+        }));
       }
     } catch (e) {
       console.error("Failed to load chat messages from localStorage:", e);
