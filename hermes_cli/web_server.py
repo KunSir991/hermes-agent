@@ -2326,14 +2326,18 @@ async def chat_message(body: ChatMessage, request: Request):
                 body.message,
                 conversation_history=conv_history or None,
             )
+            _log.info(f"[Web Chat] run_conversation returned: type={type(result).__name__}")
             if isinstance(result, dict):
                 final = result.get("final_response") or ""
                 error = result.get("error")
+                _log.info(f"[Web Chat] final_response length={len(final)}, error={error}")
                 if error and not final:
                     _put({"type": "error", "message": error})
             else:
                 final = str(result) if result else ""
+                _log.info(f"[Web Chat] result is not dict, converted to string length={len(final)}")
             # Always send done event, even if final is empty
+            _log.info(f"[Web Chat] Sending done event with content length={len(final)}")
             _put({"type": "done", "content": final})
         except Exception as exc:
             _log.exception("AIAgent chat failed")
