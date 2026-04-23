@@ -226,6 +226,7 @@ export default function ChatPage() {
               if (parsed.content) {
                 fullContent = parsed.content;
               }
+              console.log('[Chat] Done event received, content:', fullContent || parsed.content);
               // Clear thinking state on done
               setMessages((prev) => {
                 const updated = [...prev];

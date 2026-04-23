@@ -2329,11 +2329,11 @@ async def chat_message(body: ChatMessage, request: Request):
             if isinstance(result, dict):
                 final = result.get("final_response") or ""
                 error = result.get("error")
-                if not final and error:
+                if error and not final:
                     _put({"type": "error", "message": error})
-                    return
             else:
                 final = str(result) if result else ""
+            # Always send done event, even if final is empty
             _put({"type": "done", "content": final})
         except Exception as exc:
             _log.exception("AIAgent chat failed")
