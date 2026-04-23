@@ -87,15 +87,20 @@ export default function ChatPage() {
     // Clear error state
     setError(null);
 
-    // Add user message immediately
-    const userMsg: ChatMessage = { role: "user", content: text };
-    setMessages((prev) => [...prev, userMsg]);
-    setInput("");
     setIsLoading(true);
 
-    // Create a placeholder assistant message that we'll stream into
-    const assistantIndex = messages.length + 1;
-    setMessages((prev) => [...prev, { role: "assistant", content: "" }]);
+    // Add user message and assistant placeholder using functional update
+    // to ensure we always get the latest messages length
+    let assistantIndex = -1;
+    setMessages((prev) => {
+      assistantIndex = prev.length; // Will be the index of the assistant message
+      return [
+        ...prev,
+        { role: "user", content: text },
+        { role: "assistant", content: "" },
+      ];
+    });
+    setInput("");
 
     const controller = new AbortController();
     abortRef.current = controller;
