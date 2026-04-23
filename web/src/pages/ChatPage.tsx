@@ -99,7 +99,11 @@ export default function ChatPage() {
 
     // Use functional update to get latest messages length and set assistant index
     setMessages((prev) => {
-      assistantIndexRef.current = prev.length;
+      // We're adding 2 messages: user (at prev.length) and assistant (at prev.length + 1)
+      const userIndex = prev.length;
+      const assistantIdx = prev.length + 1;
+      assistantIndexRef.current = assistantIdx;
+      console.log('[Chat] Adding messages: user at', userIndex, ', assistant at', assistantIdx);
       return [
         ...prev,
         { role: "user", content: text },
