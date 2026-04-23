@@ -43,6 +43,7 @@ export default function ChatPage() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const assistantIndexRef = useRef<number>(-1);
 
   // Save messages to localStorage whenever they change
   useEffect(() => {
@@ -86,14 +87,11 @@ export default function ChatPage() {
 
     // Clear error state
     setError(null);
-
     setIsLoading(true);
 
-    // Add user message and assistant placeholder using functional update
-    // to ensure we always get the latest messages length
-    let assistantIndex = -1;
+    // Use functional update to get latest messages length and set assistant index
     setMessages((prev) => {
-      assistantIndex = prev.length; // Will be the index of the assistant message
+      assistantIndexRef.current = prev.length;
       return [
         ...prev,
         { role: "user", content: text },
@@ -136,6 +134,7 @@ export default function ChatPage() {
       let buffer = "";
       let fullContent = "";
       let currentEventType = "";
+      const assistantIndex = assistantIndexRef.current;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -257,8 +256,9 @@ export default function ChatPage() {
       // Remove the empty assistant message on error
       setMessages((prev) => {
         const updated = [...prev];
-        if (updated[assistantIndex]?.content === "") {
-          updated.splice(assistantIndex, 1);
+        const idx = assistantIndexRef.current;
+        if (idx >= 0 && updated[idx]?.content === "") {
+          updated.splice(idx, 1);
         }
         return updated;
       });
