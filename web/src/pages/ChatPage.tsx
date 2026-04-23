@@ -231,12 +231,20 @@ export default function ChatPage() {
             }
 
             if (currentEventType === "done") {
+              console.log('[Chat] === DONE EVENT RECEIVED ===');
+              console.log('[Chat] assistantIndex:', assistantIndex);
+              console.log('[Chat] parsed.content:', parsed.content);
+              console.log('[Chat] fullContent before:', fullContent);
+              
               if (parsed.content) {
                 fullContent = parsed.content;
               }
-              console.log('[Chat] Done event received, content:', fullContent || parsed.content);
+              console.log('[Chat] fullContent after:', fullContent);
+              
               // Clear thinking state on done
               setMessages((prev) => {
+                console.log('[Chat] prev messages count:', prev.length);
+                console.log('[Chat] prev[assistantIndex]:', prev[assistantIndex]);
                 const updated = [...prev];
                 if (updated[assistantIndex]) {
                   updated[assistantIndex] = {
@@ -244,6 +252,9 @@ export default function ChatPage() {
                     content: fullContent || parsed.content || "",
                     thinking: undefined,
                   };
+                  console.log('[Chat] Updated message at index', assistantIndex, ':', updated[assistantIndex]);
+                } else {
+                  console.error('[Chat] ERROR: No message at assistantIndex', assistantIndex);
                 }
                 return updated;
               });
