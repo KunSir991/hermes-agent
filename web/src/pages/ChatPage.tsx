@@ -22,7 +22,20 @@ interface ChatMessage {
 
 export default function ChatPage() {
   const { t } = useI18n();
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  
+  // Load messages from localStorage on mount
+  const [messages, setMessages] = useState<ChatMessage[]>(() => {
+    try {
+      const stored = localStorage.getItem("hermes-chat-messages");
+      if (stored) {
+        return JSON.parse(stored);
+      }
+    } catch (e) {
+      console.error("Failed to load chat messages from localStorage:", e);
+    }
+    return [];
+  });
+  
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -30,6 +43,15 @@ export default function ChatPage() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+
+  // Save messages to localStorage whenever they change
+  useEffect(() => {
+    try {
+      localStorage.setItem("hermes-chat-messages", JSON.stringify(messages));
+    } catch (e) {
+      console.error("Failed to save chat messages to localStorage:", e);
+    }
+  }, [messages]);
 
   // Fetch current model info on mount
   useEffect(() => {

@@ -26,11 +26,21 @@ type BlockNode =
   | { type: "heading"; level: number; content: string }
   | { type: "hr" }
   | { type: "list"; ordered: boolean; items: string[] }
+  | { type: "table"; header: string[]; rows: string[][] }
   | { type: "paragraph"; content: string };
 
 /* ------------------------------------------------------------------ */
 /*  Block parser                                                       */
 /* ------------------------------------------------------------------ */
+
+function splitTableRow(line: string): string[] {
+  return line
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((cell) => cell.trim());
+}
 
 function parseBlocks(text: string): BlockNode[] {
   const lines = text.split("\n");
@@ -90,6 +100,26 @@ function parseBlocks(text: string): BlockNode[] {
       }
       blocks.push({ type: "list", ordered: true, items });
       continue;
+    }
+
+    // Table detection: look for rows with | character followed by a separator row
+    if (line.includes("|") && i + 1 < lines.length) {
+      const nextLine = lines[i + 1];
+      // Check if next line is a table separator (contains | and only -, :, and spaces)
+      if (/^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)+\|?\s*$/.test(nextLine)) {
+        const headerCells = splitTableRow(line);
+        const rows: string[][] = [];
+        i += 2; // skip header and separator
+        
+        // Collect table rows
+        while (i < lines.length && lines[i].includes("|")) {
+          rows.push(splitTableRow(lines[i]));
+          i++;
+        }
+        
+        blocks.push({ type: "table", header: headerCells, rows });
+        continue;
+      }
     }
 
     // Empty line
@@ -155,6 +185,35 @@ function Block({ block, highlightTerms }: { block: BlockNode; highlightTerms?: s
             <li key={i}><InlineContent text={item} highlightTerms={highlightTerms} /></li>
           ))}
         </Tag>
+      );
+    }
+
+    case "table": {
+      return (
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-sm border-collapse border border-border">
+            <thead className="bg-secondary/40">
+              <tr>
+                {block.header.map((cell, i) => (
+                  <th key={i} className="border border-border px-3 py-2 text-left font-semibold">
+                    <InlineContent text={cell} highlightTerms={highlightTerms} />
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {block.rows.map((row, rowIdx) => (
+                <tr key={rowIdx} className="hover:bg-secondary/20">
+                  {row.map((cell, cellIdx) => (
+                    <td key={cellIdx} className="border border-border px-3 py-2">
+                      <InlineContent text={cell} highlightTerms={highlightTerms} />
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       );
     }
 

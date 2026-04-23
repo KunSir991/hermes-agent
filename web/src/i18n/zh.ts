@@ -54,6 +54,7 @@ export const zh: Translations = {
     },
     nav: {
       status: "状态",
+      chat: "对话",
       sessions: "会话",
       analytics: "分析",
       logs: "日志",
